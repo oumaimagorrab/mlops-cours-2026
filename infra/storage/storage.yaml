@@ -78,6 +78,7 @@ spec:
       labels:
         app: seaweedfs
     spec:
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -138,3 +139,4 @@ spec:
   ports:
     - { name: s3, port: 8333, targetPort: 8333 }
     - { name: filer, port: 8888, targetPort: 8888 }
+
