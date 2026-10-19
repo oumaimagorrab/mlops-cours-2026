@@ -167,9 +167,11 @@ def compute_metrics(cfg: DatasetConfig, y_true, proba, threshold: float) -> dict
 
 
 def file_md5(path: str | Path) -> str:
-    """Calcule l'empreinte MD5 d'un fichier."""
-    return hashlib.md5(Path(path).read_bytes()).hexdigest()
-
+    """Calcule une empreinte MD5 pour identifier un fichier, pas pour la sécurité."""
+    return hashlib.md5(
+        Path(path).read_bytes(),
+        usedforsecurity=False,
+    ).hexdigest()
 
 def main() -> None:
     args = parse_args()
