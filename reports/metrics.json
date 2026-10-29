@@ -1,0 +1,17 @@
+{
+  "roc_auc": 0.8058,
+  "average_precision": 0.6328,
+  "f1": 0.5746,
+  "precision": 0.4298,
+  "recall": 0.8667,
+  "accuracy": 0.615,
+  "business_cost": 109.0,
+  "decision_threshold": 0.3182,
+  "confusion": {
+    "tn": 71,
+    "fp": 69,
+    "fn": 8,
+    "tp": 52
+  },
+  "n_test": 200
+}
