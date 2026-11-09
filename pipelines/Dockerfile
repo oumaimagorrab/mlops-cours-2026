@@ -13,8 +13,8 @@ WORKDIR /app
 #    kfp sans ses dépendances suffit à exécuter un composant : c'est ce que KFP
 #    installerait au démarrage de CHAQUE pod (install_kfp_package=False dans components.py).
 COPY pipelines/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --root-user-action=ignore -r /tmp/requirements.txt \
-    && pip install --no-cache-dir --root-user-action=ignore --no-deps kfp==2.17.0
+RUN pip install --no-cache-dir --only-binary=:all: --root-user-action=ignore -r /tmp/requirements.txt \
+    && pip install --no-cache-dir --only-binary=:all: --root-user-action=ignore --no-deps kfp==2.17.0
 
 # 2. Le code et le contrat, avec la même arborescence que le repo
 COPY dataset.yaml params.yaml ./

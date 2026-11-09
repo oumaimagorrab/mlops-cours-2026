@@ -28,7 +28,84 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]  # racine du projet (/app dans l'image)
 OUTPUT_DIRS = ("data", "models", "reports")  # là où les étapes écrivent leurs sorties
 XCOM_FILE = Path("/airflow/xcom/return.json")  # lu par le KubernetesPodOperator
+# Modules et arguments autorisés pour les étapes du pipeline.
+ALLOWED_MODULES = {
+    "src.download",
+    "src.validate_data",
+    "src.prepare",
+    "src.train",
+    "src.evaluate",
+    "src.promote",
+}
 
+ALLOWED_OPTIONS = {
+    "src.download": {"--from-file"},
+    "src.validate_data": set(),
+    "src.prepare": set(),
+    "src.train": {
+        "--model",
+        "--C",
+        "--class_weight",
+        "--n_estimators",
+        "--max_depth",
+        "--learning_rate",
+        "--random_state",
+    },
+    "src.evaluate": set(),
+    "src.promote": {"--run-id", "--filter"},
+}
+
+def validate_stage_call(module: str, args) -> list[str]:
+    """Vérifie le module et les arguments avant de lancer le sous-processus."""
+    if module not in ALLOWED_MODULES:
+        raise ValueError(f"Module non autorisé : {module!r}")
+
+    safe_args = []
+    for arg in args:
+        if isinstance(arg, bool) or not isinstance(arg, (str, int, float)):
+            raise ValueError(f"Type d'argument non autorisé : {type(arg).__name__}")
+
+        value = str(arg)
+        if "\x00" in value:
+            raise ValueError("Un argument contient un caractère interdit.")
+        safe_args.append(value)
+
+    allowed = ALLOWED_OPTIONS[module]
+    positional_count = 0
+    index = 0
+
+    while index < len(safe_args):
+        token = safe_args[index]
+
+        if token.startswith("--"):
+            option, separator, inline_value = token.partition("=")
+
+            if option not in allowed:
+                raise ValueError(
+                    f"Option {option!r} non autorisée pour {module!r}"
+                )
+
+            if separator:
+                if not inline_value:
+                    raise ValueError(f"Valeur manquante pour {option}")
+            else:
+                index += 1
+                if index >= len(safe_args) or safe_args[index].startswith("-"):
+                    raise ValueError(f"Valeur manquante ou invalide pour {option}")
+
+        else:
+            # Seul validate_data accepte un argument positionnel : le CSV.
+            if module != "src.validate_data" or positional_count >= 1:
+                raise ValueError(
+                    f"Argument positionnel non autorisé pour {module!r}"
+                )
+            if token.startswith("-"):
+                raise ValueError("Chemin de fichier invalide.")
+            positional_count += 1
+
+        index += 1
+
+    return safe_args
 
 def copy(src: str | Path, dst: str | Path) -> None:
     """Copie un fichier ou un dossier, en créant les dossiers parents."""
@@ -47,9 +124,16 @@ def execute(module: str, args, workdir: Path, env: dict | None = None) -> None:
     run_env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), os.getenv("PYTHONPATH")]))
     config = Path(os.getenv("DATASET_CONFIG", ROOT / "dataset.yaml")).resolve()
     run_env["DATASET_CONFIG"] = str(config)
-    cmd = [sys.executable, "-m", module, *map(str, args)]
+    safe_args = validate_stage_call(module, args)
+    cmd = [sys.executable, "-m", module, *safe_args]
     print("+", " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=workdir, env=run_env, check=True)
+    subprocess.run(
+    cmd,
+    cwd=workdir,
+    env=run_env,
+    check=True,
+    shell=False,
+    )
 
 
 def run_stage(module: str, args=(), inputs=None, outputs=None, env=None) -> None:
