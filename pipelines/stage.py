@@ -28,10 +28,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]  # racine du projet (/app dans l'image)
 OUTPUT_DIRS = ("data", "models", "reports")  # là où les étapes écrivent leurs sorties
 XCOM_FILE = Path("/airflow/xcom/return.json")  # lu par le KubernetesPodOperator
+VALIDATE_MODULE = "src.validate_data"
+S3_PREFIX = "s3://"
 # Modules et arguments autorisés pour les étapes du pipeline.
 ALLOWED_MODULES = {
     "src.download",
-    "src.validate_data",
+    VALIDATE_MODULE,
     "src.prepare",
     "src.train",
     "src.evaluate",
@@ -40,7 +42,7 @@ ALLOWED_MODULES = {
 
 ALLOWED_OPTIONS = {
     "src.download": {"--from-file"},
-    "src.validate_data": set(),
+    VALIDATE_MODULE: set(),
     "src.prepare": set(),
     "src.train": {
         "--model",
@@ -55,12 +57,10 @@ ALLOWED_OPTIONS = {
     "src.promote": {"--run-id", "--filter"},
 }
 
-def validate_stage_call(module: str, args) -> list[str]:
-    """Vérifie le module et les arguments avant de lancer le sous-processus."""
-    if module not in ALLOWED_MODULES:
-        raise ValueError(f"Module non autorisé : {module!r}")
-
+def _normalize_args(args) -> list[str]:
+    """Convertit les arguments autorisés en chaînes."""
     safe_args = []
+
     for arg in args:
         if isinstance(arg, bool) or not isinstance(arg, (str, int, float)):
             raise ValueError(f"Type d'argument non autorisé : {type(arg).__name__}")
@@ -68,44 +68,92 @@ def validate_stage_call(module: str, args) -> list[str]:
         value = str(arg)
         if "\x00" in value:
             raise ValueError("Un argument contient un caractère interdit.")
+
         safe_args.append(value)
 
+    return safe_args
+
+
+def _validate_option_value(option: str, value: str) -> None:
+    """Vérifie les valeurs des options connues."""
+    if not value or value.startswith("-"):
+        raise ValueError(f"Valeur manquante ou invalide pour {option}")
+
+    if option in {"--C", "--learning_rate"}:
+        try:
+            number = float(value)
+        except ValueError as exc:
+            raise ValueError(f"Valeur numérique invalide pour {option}") from exc
+
+        if number <= 0:
+            raise ValueError(f"La valeur de {option} doit être positive.")
+
+    elif option in {"--n_estimators", "--random_state", "--max_depth"}:
+        if option == "--max_depth" and value.lower() == "none":
+            return
+
+        try:
+            number = int(value)
+        except ValueError as exc:
+            raise ValueError(f"Entier invalide pour {option}") from exc
+
+        if number <= 0 and option != "--random_state":
+            raise ValueError(f"La valeur de {option} doit être positive.")
+
+
+def _validate_positionals(module: str, token: str, count: int) -> int:
+    """Autorise uniquement le CSV positionnel de validate_data."""
+    if module != VALIDATE_MODULE or count >= 1:
+        raise ValueError(f"Argument positionnel non autorisé pour {module!r}")
+
+    if token.startswith("-"):
+        raise ValueError("Chemin de fichier invalide.")
+
+    return count + 1
+
+
+def validate_stage_call(module: str, args) -> list[str]:
+    """Vérifie le module et les arguments avant de lancer le sous-processus."""
+    if module not in ALLOWED_MODULES:
+        raise ValueError(f"Module non autorisé : {module!r}")
+
+    safe_args = _normalize_args(args)
     allowed = ALLOWED_OPTIONS[module]
     positional_count = 0
+    used_options = set()
     index = 0
 
     while index < len(safe_args):
         token = safe_args[index]
 
-        if token.startswith("--"):
-            option, separator, inline_value = token.partition("=")
+        if not token.startswith("--"):
+            positional_count = _validate_positionals(
+                module, token, positional_count
+            )
+            index += 1
+            continue
 
-            if option not in allowed:
-                raise ValueError(
-                    f"Option {option!r} non autorisée pour {module!r}"
-                )
+        option, separator, inline_value = token.partition("=")
 
-            if separator:
-                if not inline_value:
-                    raise ValueError(f"Valeur manquante pour {option}")
-            else:
-                index += 1
-                if index >= len(safe_args) or safe_args[index].startswith("-"):
-                    raise ValueError(f"Valeur manquante ou invalide pour {option}")
+        if option not in allowed:
+            raise ValueError(f"Option {option!r} non autorisée pour {module!r}")
 
+        if option in used_options:
+            raise ValueError(f"Option répétée : {option}")
+
+        used_options.add(option)
+
+        if separator:
+            value = inline_value
         else:
-            # Seul validate_data accepte un argument positionnel : le CSV.
-            if module != "src.validate_data" or positional_count >= 1:
-                raise ValueError(
-                    f"Argument positionnel non autorisé pour {module!r}"
-                )
-            if token.startswith("-"):
-                raise ValueError("Chemin de fichier invalide.")
-            positional_count += 1
+            index += 1
+            value = safe_args[index] if index < len(safe_args) else ""
 
+        _validate_option_value(option, value)
         index += 1
 
     return safe_args
+
 
 def copy(src: str | Path, dst: str | Path) -> None:
     """Copie un fichier ou un dossier, en créant les dossiers parents."""
@@ -117,22 +165,32 @@ def copy(src: str | Path, dst: str | Path) -> None:
         shutil.copyfile(src, dst)
 
 
+
 def execute(module: str, args, workdir: Path, env: dict | None = None) -> None:
-    """Lance python -m <module> <args> dans workdir, avec le code et le contrat du projet."""
-    shutil.copyfile(ROOT / "params.yaml", workdir / "params.yaml")
-    run_env = {**os.environ, **(env or {})}
-    run_env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), os.getenv("PYTHONPATH")]))
-    config = Path(os.getenv("DATASET_CONFIG", ROOT / "dataset.yaml")).resolve()
-    run_env["DATASET_CONFIG"] = str(config)
+    """Lance une étape dans le dossier de travail temporaire."""
     safe_args = validate_stage_call(module, args)
+
+    shutil.copyfile(ROOT / "params.yaml", workdir / "params.yaml")
+
+    run_env = {**os.environ, **(env or {})}
+    run_env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(ROOT), os.getenv("PYTHONPATH")])
+    )
+
+    config = Path(
+        os.getenv("DATASET_CONFIG", ROOT / "dataset.yaml")
+    ).resolve()
+    run_env["DATASET_CONFIG"] = str(config)
+
     cmd = [sys.executable, "-m", module, *safe_args]
     print("+", " ".join(cmd), flush=True)
+
     subprocess.run(
-    cmd,
-    cwd=workdir,
-    env=run_env,
-    check=True,
-    shell=False,
+        cmd,
+        cwd=workdir,
+        env=run_env,
+        check=True,
+        shell=False,
     )
 
 
@@ -157,14 +215,14 @@ def _s3(workspace: str):
     """Client S3 (endpoint et identifiants lus dans l'environnement), bucket, préfixe."""
     import boto3
 
-    bucket, _, prefix = workspace.removeprefix("s3://").partition("/")
+    bucket, _, prefix = workspace.removeprefix(S3_PREFIX).partition("/")
     prefix = re.sub(r"[^A-Za-z0-9._/-]", "_", prefix).strip("/")  # run_id Airflow : « : + »
     return boto3.client("s3"), bucket, prefix
 
 
 def pull(workspace: str, work: Path) -> None:
     """Récupère les sorties des étapes précédentes du run."""
-    if not workspace.startswith("s3://"):
+    if not workspace.startswith(S3_PREFIX):
         if Path(workspace).is_dir():
             copy(workspace, work)
         return
@@ -188,7 +246,7 @@ def snapshot(work: Path) -> dict[Path, int]:
 def push(work: Path, workspace: str, before: dict[Path, int]) -> None:
     """Publie les fichiers créés ou modifiés par l'étape."""
     changed = [p for p, mtime in snapshot(work).items() if before.get(p) != mtime]
-    if workspace.startswith("s3://"):
+    if workspace.startswith(S3_PREFIX):
         s3, bucket, prefix = _s3(workspace)
         for p in changed:
             s3.upload_file(str(p), bucket, f"{prefix}/{p.relative_to(work).as_posix()}")
