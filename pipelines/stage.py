@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import math
 import tempfile
 from pathlib import Path
 
@@ -54,7 +55,7 @@ ALLOWED_OPTIONS = {
         "--random_state",
     },
     "src.evaluate": set(),
-    "src.promote": {"--run-id", "--filter"},
+    "src.promote": {"--run-id"},
 }
 
 def _normalize_args(args) -> list[str]:
@@ -74,31 +75,63 @@ def _normalize_args(args) -> list[str]:
     return safe_args
 
 
+
+def _validate_positive_float(option: str, value: str) -> None:
+    """Vérifie qu'une option contient un nombre réel strictement positif."""
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise ValueError(f"Valeur numérique invalide pour {option}") from exc
+
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"La valeur de {option} doit être positive et finie.")
+
+
+def _validate_integer(option: str, value: str) -> None:
+    """Vérifie qu'une option contient un entier valide."""
+    if option == "--max_depth" and value.lower() == "none":
+        return
+
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise ValueError(f"Entier invalide pour {option}") from exc
+
+    if number <= 0 and option != "--random_state":
+        raise ValueError(f"La valeur de {option} doit être positive.")
+
+
 def _validate_option_value(option: str, value: str) -> None:
-    """Vérifie les valeurs des options connues."""
+    """Vérifie strictement les valeurs des options connues."""
     if not value or value.startswith("-"):
         raise ValueError(f"Valeur manquante ou invalide pour {option}")
 
-    if option in {"--C", "--learning_rate"}:
-        try:
-            number = float(value)
-        except ValueError as exc:
-            raise ValueError(f"Valeur numérique invalide pour {option}") from exc
+    if option == "--model":
+        if value not in {
+            "logistic_regression",
+            "random_forest",
+            "gradient_boosting",
+            "dummy",
+        }:
+            raise ValueError("Type de modèle non autorisé.")
 
-        if number <= 0:
-            raise ValueError(f"La valeur de {option} doit être positive.")
+    elif option == "--class_weight":
+        if value.lower() not in {"none", "balanced", "balanced_subsample"}:
+            raise ValueError("Valeur class_weight non autorisée.")
+
+    elif option in {"--C", "--learning_rate"}:
+        _validate_positive_float(option, value)
 
     elif option in {"--n_estimators", "--random_state", "--max_depth"}:
-        if option == "--max_depth" and value.lower() == "none":
-            return
+        _validate_integer(option, value)
 
-        try:
-            number = int(value)
-        except ValueError as exc:
-            raise ValueError(f"Entier invalide pour {option}") from exc
+    elif option == "--run-id":
+        if not re.fullmatch(r"[a-fA-F0-9]{32}", value):
+            raise ValueError("Format de run_id MLflow invalide.")
 
-        if number <= 0 and option != "--random_state":
-            raise ValueError(f"La valeur de {option} doit être positive.")
+    elif option == "--from-file":
+        if not value.lower().endswith(".csv"):
+            raise ValueError("Seuls les fichiers CSV sont autorisés.")
 
 
 def _validate_positionals(module: str, token: str, count: int) -> int:
