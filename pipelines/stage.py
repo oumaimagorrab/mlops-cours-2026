@@ -35,15 +35,19 @@ S3_PREFIX = "s3://"
 ALLOWED_MODULES = {
     "src.download",
     VALIDATE_MODULE,
+    "src.simulate",
     "src.prepare",
     "src.train",
     "src.evaluate",
     "src.promote",
+    "src.detect_drift",
+    "src.validate_model",
 }
 
 ALLOWED_OPTIONS = {
     "src.download": {"--from-file"},
     VALIDATE_MODULE: set(),
+    "src.simulate": set(),
     "src.prepare": set(),
     "src.train": {
         "--model",
@@ -56,6 +60,13 @@ ALLOWED_OPTIONS = {
     },
     "src.evaluate": set(),
     "src.promote": {"--run-id"},
+    "src.detect_drift": {
+    "--ks-alpha",
+    "--psi-threshold",
+    "--drift-share",
+    "--no-fail",
+    },
+    "src.validate_model": set(),
 }
 
 def _normalize_args(args) -> list[str]:
@@ -101,48 +112,97 @@ def _validate_integer(option: str, value: str) -> None:
         raise ValueError(f"La valeur de {option} doit être positive.")
 
 
+
+def _validate_choice(
+    value: str,
+    allowed_values: set[str],
+    error_message: str,
+) -> None:
+    """Vérifie qu'une valeur appartient à une liste autorisée."""
+    if value not in allowed_values:
+        raise ValueError(error_message)
+
+
 def _validate_option_value(option: str, value: str) -> None:
     """Vérifie strictement les valeurs des options connues."""
     if not value or value.startswith("-"):
         raise ValueError(f"Valeur manquante ou invalide pour {option}")
 
-    if option == "--model":
-        if value not in {
-            "logistic_regression",
-            "random_forest",
-            "gradient_boosting",
-            "dummy",
-        }:
-            raise ValueError("Type de modèle non autorisé.")
+    validators = {
+        "--model": lambda: _validate_choice(
+            value,
+            {
+                "logistic_regression",
+                "random_forest",
+                "gradient_boosting",
+                "dummy",
+            },
+            "Type de modèle non autorisé.",
+        ),
+        "--class_weight": lambda: _validate_choice(
+            value.lower(),
+            {"none", "balanced", "balanced_subsample"},
+            "Valeur class_weight non autorisée.",
+        ),
+        "--C": lambda: _validate_positive_float(option, value),
+        "--learning_rate": lambda: _validate_positive_float(option, value),
+        "--n_estimators": lambda: _validate_integer(option, value),
+        "--random_state": lambda: _validate_integer(option, value),
+        "--max_depth": lambda: _validate_integer(option, value),
+        "--ks-alpha": lambda: _validate_positive_float(option, value),
+        "--psi-threshold": lambda: _validate_positive_float(option, value),
+        "--drift-share": lambda: _validate_positive_float(option, value),
+    }
 
-    elif option == "--class_weight":
-        if value.lower() not in {"none", "balanced", "balanced_subsample"}:
-            raise ValueError("Valeur class_weight non autorisée.")
+    validator = validators.get(option)
 
-    elif option in {"--C", "--learning_rate"}:
-        _validate_positive_float(option, value)
+    if validator:
+        validator()
+    elif option == "--run-id" and not re.fullmatch(
+        r"[a-fA-F0-9]{32}", value
+    ):
+        raise ValueError("Format de run_id MLflow invalide.")
+    elif option == "--from-file" and not value.lower().endswith(".csv"):
+        raise ValueError("Seuls les fichiers CSV sont autorisés.")
 
-    elif option in {"--n_estimators", "--random_state", "--max_depth"}:
-        _validate_integer(option, value)
-
-    elif option == "--run-id":
-        if not re.fullmatch(r"[a-fA-F0-9]{32}", value):
-            raise ValueError("Format de run_id MLflow invalide.")
-
-    elif option == "--from-file":
-        if not value.lower().endswith(".csv"):
-            raise ValueError("Seuls les fichiers CSV sont autorisés.")
 
 
 def _validate_positionals(module: str, token: str, count: int) -> int:
-    """Autorise uniquement le CSV positionnel de validate_data."""
-    if module != VALIDATE_MODULE or count >= 1:
-        raise ValueError(f"Argument positionnel non autorisé pour {module!r}")
+    """Autorise uniquement les arguments positionnels prévus."""
 
     if token.startswith("-"):
         raise ValueError("Chemin de fichier invalide.")
 
-    return count + 1
+    if module == VALIDATE_MODULE:
+        if count >= 1:
+            raise ValueError(
+                f"Argument positionnel non autorisé pour {module!r}"
+            )
+        return count + 1
+
+    if module == "src.simulate":
+        allowed_values = {
+            0: {"corrupt", "drift"},
+        }
+
+        if count == 0 and token not in allowed_values[0]:
+            raise ValueError("Type de simulation non autorisé.")
+
+        if count >= 3:
+            raise ValueError("Trop d'arguments positionnels.")
+
+        return count + 1
+
+    if module == "src.detect_drift":
+        if count >= 2:
+            raise ValueError(
+                "Deux fichiers CSV au maximum sont autorisés pour detect_drift."
+            )
+        return count + 1
+
+    raise ValueError(
+        f"Argument positionnel non autorisé pour {module!r}"
+    )
 
 
 def validate_stage_call(module: str, args) -> list[str]:
@@ -175,6 +235,13 @@ def validate_stage_call(module: str, args) -> list[str]:
             raise ValueError(f"Option répétée : {option}")
 
         used_options.add(option)
+
+        # Option booléenne sans valeur
+        if option == "--no-fail":
+            if separator:
+                raise ValueError("--no-fail ne prend pas de valeur.")
+            index += 1
+            continue
 
         if separator:
             value = inline_value
@@ -227,6 +294,7 @@ def execute(module: str, args, workdir: Path, env: dict | None = None) -> None:
     )
 
 
+# pipelines/stage.py — fonction run_stage (Lab 3)
 def run_stage(module: str, args=(), inputs=None, outputs=None, env=None) -> None:
     """Copie les entrées, lance l'étape, copie les sorties (composants KFP).
 
@@ -238,7 +306,15 @@ def run_stage(module: str, args=(), inputs=None, outputs=None, env=None) -> None
         work = Path(tmp)
         for rel, src in (inputs or {}).items():
             copy(src, work / rel)
-        execute(module, args, work, env)
+        try:
+            execute(module, args, work, env)
+        except subprocess.CalledProcessError:
+            # Gate en échec (Lab 3) : on recopie quand même les rapports déjà écrits,
+            # ils expliquent l'échec (kfp.local les garde dans local_outputs/)
+            for rel, dst in (outputs or {}).items():
+                if (work / rel).exists():
+                    copy(work / rel, dst)
+            raise
         for rel, dst in (outputs or {}).items():
             copy(work / rel, dst)
 

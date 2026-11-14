@@ -10,4 +10,8 @@ numpy==2.5.3
 pyarrow==25.0.1  # data/processed/features.parquet (src/prepare.py)
 pyyaml==6.0.3
 boto3==1.43.106  # dossier de travail S3 des tasks Airflow (pipelines/stage.py)
-
+# Lab 3 : gates de validation
+great-expectations==1.23.2  # contrat de données (gx/)
+evidently==0.7.23  # rapports de drift et de classification
+scipy==1.18.1  # tests KS, chi2, Wasserstein (src/detect_drift.py)
+pytest==9.1.1  # tests comportementaux du modèle (tests/test_model_behavior.py)
