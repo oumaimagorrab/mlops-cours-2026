@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
-import math
 import tempfile
 from pathlib import Path
 
@@ -30,24 +30,26 @@ ROOT = Path(__file__).resolve().parents[1]  # racine du projet (/app dans l'imag
 OUTPUT_DIRS = ("data", "models", "reports")  # là où les étapes écrivent leurs sorties
 XCOM_FILE = Path("/airflow/xcom/return.json")  # lu par le KubernetesPodOperator
 VALIDATE_MODULE = "src.validate_data"
+SIMULATE_MODULE = "src.simulate"
+DETECT_DRIFT_MODULE = "src.detect_drift"
 S3_PREFIX = "s3://"
 # Modules et arguments autorisés pour les étapes du pipeline.
 ALLOWED_MODULES = {
     "src.download",
     VALIDATE_MODULE,
-    "src.simulate",
+    SIMULATE_MODULE,
     "src.prepare",
     "src.train",
     "src.evaluate",
     "src.promote",
-    "src.detect_drift",
+    DETECT_DRIFT_MODULE,
     "src.validate_model",
 }
 
 ALLOWED_OPTIONS = {
     "src.download": {"--from-file"},
     VALIDATE_MODULE: set(),
-    "src.simulate": set(),
+    SIMULATE_MODULE: set(),
     "src.prepare": set(),
     "src.train": {
         "--model",
@@ -60,14 +62,15 @@ ALLOWED_OPTIONS = {
     },
     "src.evaluate": set(),
     "src.promote": {"--run-id"},
-    "src.detect_drift": {
-    "--ks-alpha",
-    "--psi-threshold",
-    "--drift-share",
-    "--no-fail",
+    DETECT_DRIFT_MODULE: {
+        "--ks-alpha",
+        "--psi-threshold",
+        "--drift-share",
+        "--no-fail",
     },
     "src.validate_model": set(),
 }
+
 
 def _normalize_args(args) -> list[str]:
     """Convertit les arguments autorisés en chaînes."""
@@ -84,7 +87,6 @@ def _normalize_args(args) -> list[str]:
         safe_args.append(value)
 
     return safe_args
-
 
 
 def _validate_positive_float(option: str, value: str) -> None:
@@ -110,7 +112,6 @@ def _validate_integer(option: str, value: str) -> None:
 
     if number <= 0 and option != "--random_state":
         raise ValueError(f"La valeur de {option} doit être positive.")
-
 
 
 def _validate_choice(
@@ -158,13 +159,10 @@ def _validate_option_value(option: str, value: str) -> None:
 
     if validator:
         validator()
-    elif option == "--run-id" and not re.fullmatch(
-        r"[a-fA-F0-9]{32}", value
-    ):
+    elif option == "--run-id" and not re.fullmatch(r"[a-fA-F0-9]{32}", value):
         raise ValueError("Format de run_id MLflow invalide.")
     elif option == "--from-file" and not value.lower().endswith(".csv"):
         raise ValueError("Seuls les fichiers CSV sont autorisés.")
-
 
 
 def _validate_positionals(module: str, token: str, count: int) -> int:
@@ -175,12 +173,10 @@ def _validate_positionals(module: str, token: str, count: int) -> int:
 
     if module == VALIDATE_MODULE:
         if count >= 1:
-            raise ValueError(
-                f"Argument positionnel non autorisé pour {module!r}"
-            )
+            raise ValueError(f"Argument positionnel non autorisé pour {module!r}")
         return count + 1
 
-    if module == "src.simulate":
+    if module == SIMULATE_MODULE:
         allowed_values = {
             0: {"corrupt", "drift"},
         }
@@ -193,66 +189,63 @@ def _validate_positionals(module: str, token: str, count: int) -> int:
 
         return count + 1
 
-    if module == "src.detect_drift":
+    if module == DETECT_DRIFT_MODULE:
         if count >= 2:
-            raise ValueError(
-                "Deux fichiers CSV au maximum sont autorisés pour detect_drift."
-            )
+            raise ValueError("Deux fichiers CSV au maximum sont autorisés pour detect_drift.")
         return count + 1
 
-    raise ValueError(
-        f"Argument positionnel non autorisé pour {module!r}"
-    )
+    raise ValueError(f"Argument positionnel non autorisé pour {module!r}")
+
+
+def _consume_option(safe_args: list[str], index: int, allowed: set[str], used: set[str]) -> int:
+    """Valide une option et renvoie la position de l'argument suivant."""
+    option, separator, inline_value = safe_args[index].partition("=")
+    if option not in allowed:
+        raise ValueError(f"Option non autorisée : {option!r}")
+    if option in used:
+        raise ValueError(f"Option répétée : {option}")
+    used.add(option)
+    if option == "--no-fail":
+        if separator:
+            raise ValueError("--no-fail ne prend pas de valeur.")
+        return index + 1
+    if separator:
+        value = inline_value
+    else:
+        index += 1
+        value = safe_args[index] if index < len(safe_args) else ""
+    _validate_option_value(option, value)
+    return index + 1
 
 
 def validate_stage_call(module: str, args) -> list[str]:
     """Vérifie le module et les arguments avant de lancer le sous-processus."""
     if module not in ALLOWED_MODULES:
         raise ValueError(f"Module non autorisé : {module!r}")
-
     safe_args = _normalize_args(args)
-    allowed = ALLOWED_OPTIONS[module]
     positional_count = 0
     used_options = set()
     index = 0
-
     while index < len(safe_args):
         token = safe_args[index]
-
-        if not token.startswith("--"):
-            positional_count = _validate_positionals(
-                module, token, positional_count
-            )
-            index += 1
-            continue
-
-        option, separator, inline_value = token.partition("=")
-
-        if option not in allowed:
-            raise ValueError(f"Option {option!r} non autorisée pour {module!r}")
-
-        if option in used_options:
-            raise ValueError(f"Option répétée : {option}")
-
-        used_options.add(option)
-
-        # Option booléenne sans valeur
-        if option == "--no-fail":
-            if separator:
-                raise ValueError("--no-fail ne prend pas de valeur.")
-            index += 1
-            continue
-
-        if separator:
-            value = inline_value
+        if token.startswith("--"):
+            index = _consume_option(safe_args, index, ALLOWED_OPTIONS[module], used_options)
         else:
+            positional_count = _validate_positionals(module, token, positional_count)
             index += 1
-            value = safe_args[index] if index < len(safe_args) else ""
-
-        _validate_option_value(option, value)
-        index += 1
-
     return safe_args
+
+
+def workspace_path(work: Path, relative: str | Path) -> Path:
+    """Résout un chemin d'artefact sans permettre de sortir du dossier de travail."""
+    relative = Path(relative)
+    if relative.is_absolute() or ".." in relative.parts or "\\" in str(relative):
+        raise ValueError(f"Chemin d'artefact non autorisé : {relative}")
+    root = work.resolve()
+    target = (root / relative).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(f"Chemin d'artefact hors du dossier de travail : {relative}")
+    return target
 
 
 def copy(src: str | Path, dst: str | Path) -> None:
@@ -265,7 +258,6 @@ def copy(src: str | Path, dst: str | Path) -> None:
         shutil.copyfile(src, dst)
 
 
-
 def execute(module: str, args, workdir: Path, env: dict | None = None) -> None:
     """Lance une étape dans le dossier de travail temporaire."""
     safe_args = validate_stage_call(module, args)
@@ -273,13 +265,9 @@ def execute(module: str, args, workdir: Path, env: dict | None = None) -> None:
     shutil.copyfile(ROOT / "params.yaml", workdir / "params.yaml")
 
     run_env = {**os.environ, **(env or {})}
-    run_env["PYTHONPATH"] = os.pathsep.join(
-        filter(None, [str(ROOT), os.getenv("PYTHONPATH")])
-    )
+    run_env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), os.getenv("PYTHONPATH")]))
 
-    config = Path(
-        os.getenv("DATASET_CONFIG", ROOT / "dataset.yaml")
-    ).resolve()
+    config = Path(os.getenv("DATASET_CONFIG", ROOT / "dataset.yaml")).resolve()
     run_env["DATASET_CONFIG"] = str(config)
 
     cmd = [sys.executable, "-m", module, *safe_args]
@@ -305,18 +293,18 @@ def run_stage(module: str, args=(), inputs=None, outputs=None, env=None) -> None
     with tempfile.TemporaryDirectory(prefix="stage-") as tmp:
         work = Path(tmp)
         for rel, src in (inputs or {}).items():
-            copy(src, work / rel)
+            copy(src, workspace_path(work, rel))
         try:
             execute(module, args, work, env)
         except subprocess.CalledProcessError:
             # Gate en échec (Lab 3) : on recopie quand même les rapports déjà écrits,
             # ils expliquent l'échec (kfp.local les garde dans local_outputs/)
             for rel, dst in (outputs or {}).items():
-                if (work / rel).exists():
-                    copy(work / rel, dst)
+                if workspace_path(work, rel).exists():
+                    copy(workspace_path(work, rel), dst)
             raise
         for rel, dst in (outputs or {}).items():
-            copy(work / rel, dst)
+            copy(workspace_path(work, rel), dst)
 
 
 # --- Airflow : dossier de travail du run, sur S3 (ou en local pour tester) ---------------
@@ -340,7 +328,11 @@ def pull(workspace: str, work: Path) -> None:
         s3.create_bucket(Bucket=bucket)  # premier run : le bucket n'existe pas encore
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{prefix}/"):
         for obj in page.get("Contents", []):
-            target = work / obj["Key"].removeprefix(f"{prefix}/")
+            key = obj["Key"]
+            expected_prefix = f"{prefix}/"
+            if not key.startswith(expected_prefix):
+                raise ValueError("Clé S3 hors du préfixe demandé.")
+            target = workspace_path(work, key.removeprefix(expected_prefix))
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(bucket, obj["Key"], str(target))
 
@@ -399,7 +391,8 @@ def main() -> None:
         if opts.xcom:
             summary = xcom_summary(work)
             XCOM_FILE.parent.mkdir(parents=True, exist_ok=True)
-            XCOM_FILE.write_text(json.dumps(summary), encoding="utf-8")
+            with XCOM_FILE.open("w", encoding="utf-8") as stream:
+                json.dump(summary, stream)
             print("XCom :", summary, flush=True)
 
 

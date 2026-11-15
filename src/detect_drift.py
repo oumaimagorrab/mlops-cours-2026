@@ -160,7 +160,9 @@ def main() -> int:
         "columns": rows,
     }
     REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_JSON.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", "utf-8")
+    with REPORT_JSON.open("w", encoding="utf-8") as stream:
+        json.dump(summary, stream, indent=2, ensure_ascii=False)
+        stream.write("\n")
     REPORT_MD.write_text(markdown(rows, summary), encoding="utf-8")
     print(markdown(rows, summary))
     print(f"Evidently (p-value seule) : {summary['evidently']['drifted_columns']} colonne(s)")

@@ -320,6 +320,7 @@ import json
 import sys
 
 import kfp
+from kfp_server_api.exceptions import ApiException
 
 host, out = sys.argv[1:3]
 client = kfp.Client(host=host)
@@ -340,8 +341,18 @@ def spec_of(run):
     ref = run.pipeline_version_reference
     if not spec and ref and ref.pipeline_version_id:
         if ref.pipeline_version_id not in specs:
-            version = client.get_pipeline_version(ref.pipeline_id, ref.pipeline_version_id)
-            specs[ref.pipeline_version_id] = version.pipeline_spec or {}
+            try:
+                version = client.get_pipeline_version(ref.pipeline_id, ref.pipeline_version_id)
+            except ApiException as exc:
+                if exc.status != 404:
+                    raise
+                # Historique conservé : une version supprimée ne constitue aucune preuve.
+                print(f"Attention : run {run.run_id}, version {ref.pipeline_version_id} "
+                      "introuvable (404) ; provenance non vérifiable, run non retenu.",
+                      file=sys.stderr)
+                specs[ref.pipeline_version_id] = {}
+            else:
+                specs[ref.pipeline_version_id] = version.pipeline_spec or {}
         spec = specs[ref.pipeline_version_id]
     spec = spec or {}
     return spec.get("pipeline_spec", spec)  # spec + platform_spec (kfp-kubernetes)
@@ -429,7 +440,7 @@ if ! kfp_api_ok >/dev/null 2>&1; then # port-forward temporaire vers l'UI/API KF
 fi
 check "KFP : API joignable (${KFP_HOST})" "make kfp-ui (Lab 2, étape 1.3)" \
   kfp_api_ok
-query_kfp >/dev/null 2>&1
+query_kfp >/dev/null
 check "KFP : run réussi de 'scoring-pipeline' avec les 3 gates" "étape 6.4" kfp_gated_ok
 check "KFP : run de 'scoring-bad-data-test' en échec, bloqué par validate-data" "étape 4.2" \
   kfp_bad_ok

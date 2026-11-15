@@ -11,9 +11,11 @@ params.yaml reste la seule source des valeurs par défaut, comme pour dvc repro.
 """
 
 from pathlib import Path
+from typing import cast
 
 import yaml
 from kfp import compiler, dsl, kubernetes
+from kfp.dsl.python_component import PythonComponent
 
 from pipelines.components import (
     MLFLOW_URI,
@@ -105,7 +107,7 @@ def scoring_pipeline(
     eval_task.set_memory_limit("1Gi")
 
     # Gate 3 : le modèle lui-même (Evidently + tests comportementaux)
-    model_task = validate_model(
+    model_task = cast(PythonComponent, validate_model)(
         model=train_task.outputs["model"],
         train_data=prep_task.outputs["train_data"],
         test_data=prep_task.outputs["test_data"],

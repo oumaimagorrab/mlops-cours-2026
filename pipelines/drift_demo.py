@@ -8,10 +8,12 @@ Compilation : python -m pipelines.drift_demo   (écrit drift_demo.yaml)
 """
 
 from pathlib import Path
+from typing import cast
 
 import yaml
 from kfp import compiler, dsl
 from kfp.dsl import Dataset, Input, Output
+from kfp.dsl.python_component import PythonComponent
 
 from pipelines.components import PIPELINE_IMAGE, detect_drift, ingest_data, prepare_features
 
@@ -39,9 +41,9 @@ def drift_pipeline(
     drift_share: float = DRIFT["drift_share"],
     fail_on_drift: bool = False,  # True : le drift fait échouer le run (gate)
 ):
-    ingest_task = ingest_data()
-    prep_task = prepare_features(raw_data=ingest_task.outputs["raw_data"])
-    drifted_task = simulate_drift(data=prep_task.outputs["test_data"])
+    ingest_task = cast(PythonComponent, ingest_data)()
+    prep_task = cast(PythonComponent, prepare_features)(raw_data=ingest_task.outputs["raw_data"])
+    drifted_task = cast(PythonComponent, simulate_drift)(data=prep_task.outputs["test_data"])
     drift_task = detect_drift(
         reference_data=prep_task.outputs["train_data"],
         current_data=drifted_task.outputs["drifted"],

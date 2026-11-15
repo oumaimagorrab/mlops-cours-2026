@@ -14,7 +14,17 @@ paramètre ne doit dépendre d'une constante de ce module.
 import os
 
 from kfp import dsl
-from kfp.dsl import HTML,Artifact, ClassificationMetrics, Dataset, Input, Markdown, Metrics, Model, Output
+from kfp.dsl import (
+    HTML,
+    Artifact,
+    ClassificationMetrics,
+    Dataset,
+    Input,
+    Markdown,
+    Metrics,
+    Model,
+    Output,
+)
 
 # Image construite et poussée à l'étape 2.4. Nouveau code dans l'image = nouveau tag.
 # Surcharge possible à la compilation : PIPELINE_IMAGE=… python -m pipelines.scoring_pipeline
@@ -89,6 +99,7 @@ def prepare_features(
         y = cfg.encode_target(pd.read_csv(split.path)[cfg.target])
         split.metadata["rows"] = len(y)
         split.metadata["positive_rate"] = round(float(y.mean()), 4)
+
 
 # pipelines/components.py — à ajouter après prepare_features
 @dsl.component(base_image=PIPELINE_IMAGE, install_kfp_package=False)
@@ -216,6 +227,7 @@ def evaluate_model(
     MlflowClient(mlflow_uri).log_dict(run_id, results, str(METRICS_JSON))
     return float(results[cfg.primary_metric])
 
+
 # pipelines/components.py — à ajouter après evaluate_model
 @dsl.component(base_image=PIPELINE_IMAGE, install_kfp_package=False)
 def validate_model(
@@ -247,6 +259,7 @@ def validate_model(
     summary = json.loads(Path(report.path).read_text())
     for name in ("n_checks", "n_failed", cfg.primary_metric):
         checks.log_metric(name, summary[name])
+
 
 @dsl.component(base_image=PIPELINE_IMAGE, install_kfp_package=False)
 def register_model(run_id: str, mlflow_uri: str) -> str:

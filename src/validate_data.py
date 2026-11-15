@@ -19,6 +19,7 @@ import argparse
 import html
 import json
 import sys
+from itertools import islice
 from pathlib import Path
 
 import great_expectations as gx
@@ -172,7 +173,7 @@ def observed(r) -> str:
         return "erreur : " + str(r.exception_info.get("exception_message"))[:150]
     res = r.result or {}
     if "unexpected_count" in res:
-        sample = ", ".join(map(str, (res.get("partial_unexpected_list") or [])[:5]))
+        sample = ", ".join(map(str, islice(res.get("partial_unexpected_list") or [], 5)))
         text = f"{res['unexpected_count']} hors contrat ({res['unexpected_percent']:.1f} %)"
         return f"{text} : {sample}…" if sample and not r.success else text
     return str(res.get("observed_value", ""))

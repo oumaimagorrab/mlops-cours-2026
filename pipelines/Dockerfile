@@ -11,12 +11,14 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # 1. Les dépendances d'abord : cette couche, la plus lourde, reste en cache tant que
-#    requirements.txt ne change pas (reconstruire après une modification de src/ = 2 s).
+#    les fichiers .lock ne changent pas (reconstruire après une modification de src/ = 2 s).
 #    kfp sans ses dépendances suffit à exécuter un composant : c'est ce que KFP
 #    installerait au démarrage de CHAQUE pod (install_kfp_package=False dans components.py).
-COPY pipelines/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --root-user-action=ignore -r /tmp/requirements.txt \
-    && pip install --no-cache-dir --root-user-action=ignore --no-deps kfp==2.17.0
+COPY pipelines/requirements.lock pipelines/kfp-requirements.lock /tmp/
+RUN pip install --no-cache-dir --root-user-action=ignore --only-binary=:all: \
+        --require-hashes -r /tmp/requirements.lock \
+    && pip install --no-cache-dir --root-user-action=ignore --only-binary=:all: \
+        --require-hashes --no-deps -r /tmp/kfp-requirements.lock
 
 # 2. Le code et le contrat, avec la même arborescence que le repo
 COPY dataset.yaml params.yaml ./

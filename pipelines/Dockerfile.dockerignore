@@ -10,6 +10,8 @@
 gx/uncommitted/
 !tests/
 !pipelines/requirements.txt
+!pipelines/requirements.lock
+!pipelines/kfp-requirements.lock
 !pipelines/__init__.py
 !pipelines/stage.py
 **/__pycache__
