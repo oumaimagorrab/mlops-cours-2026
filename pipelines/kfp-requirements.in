@@ -1,0 +1,2 @@
+# SDK seul : le runtime des composants utilise les dépendances du projet.
+kfp==2.17.0
