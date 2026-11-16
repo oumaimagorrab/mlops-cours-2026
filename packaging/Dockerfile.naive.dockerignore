@@ -1,4 +1,30 @@
 # Fichier : packaging/Dockerfile.naive.dockerignore
 # Même la baseline naïve exclut l'environnement virtuel : avec lui, le contexte de build
 # (et l'image) prendrait plusieurs Go. Tout le reste du repo est copié (.git, data/, …).
+# Environnement et dépôts
 .venv/
+.git/
+.gitignore
+
+# Secrets et configurations locales
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.aws/
+.ssh/
+
+# Données et artefacts volumineux
+data/
+mlruns/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Fichiers temporaires
+*.pyc
+*.log
