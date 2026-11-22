@@ -1,0 +1,17 @@
+# Fichier : packaging/Dockerfile.naive
+# Baseline volontairement naïve. Contexte de build = racine du repo :
+#   docker build -f packaging/Dockerfile.naive -t scoring-api:naive .
+FROM python:3.12
+
+WORKDIR /app
+# La baseline reste mono-stage, avec une base complète et des dépendances non figées.
+# Seuls les fichiers de serving sont copiés : aucun secret ni fichier du dépôt en bloc.
+COPY dataset.yaml ./
+COPY src/__init__.py src/dataset_config.py src/
+COPY packaging/app/__init__.py packaging/app/serve.py packaging/app/
+COPY packaging/model/model.onnx packaging/model/metadata.json packaging/model/
+RUN pip install fastapi "uvicorn[standard]" onnxruntime numpy pandas pyyaml
+
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "app.serve:app", "--app-dir", "packaging", \
+     "--host", "0.0.0.0", "--port", "8000"]

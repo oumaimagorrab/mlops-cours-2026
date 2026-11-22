@@ -1,0 +1,12 @@
+# Contexte = racine du dépôt. Ce fichier est propre à Dockerfile.naive et prend
+# priorité sur le .dockerignore racine (et ne dépend pas de Dockerfile.dockerignore).
+# Tout est exclu par défaut, y compris .env, clés, .git, venv, données et rapports.
+# Seuls les fichiers explicitement copiés par l'image naïve sont réautorisés.
+**
+!dataset.yaml
+!src/__init__.py
+!src/dataset_config.py
+!packaging/app/__init__.py
+!packaging/app/serve.py
+!packaging/model/model.onnx
+!packaging/model/metadata.json
