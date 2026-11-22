@@ -1,30 +1,12 @@
-# Fichier : packaging/Dockerfile.naive.dockerignore
-# Même la baseline naïve exclut l'environnement virtuel : avec lui, le contexte de build
-# (et l'image) prendrait plusieurs Go. Tout le reste du repo est copié (.git, data/, …).
-# Environnement et dépôts
-.venv/
-.git/
-.gitignore
-
-# Secrets et configurations locales
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-*.p12
-*.pfx
-.aws/
-.ssh/
-
-# Données et artefacts volumineux
-data/
-mlruns/
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Fichiers temporaires
-*.pyc
-*.log
+# Contexte = racine du dépôt. Ce fichier est propre à Dockerfile.naive et prend
+# priorité sur le .dockerignore racine (et ne dépend pas de Dockerfile.dockerignore).
+# Tout est exclu par défaut, y compris .env, clés, .git, venv, données et rapports.
+# Seuls les fichiers explicitement copiés par l'image naïve sont réautorisés.
+**
+!dataset.yaml
+!src/__init__.py
+!src/dataset_config.py
+!packaging/app/__init__.py
+!packaging/app/serve.py
+!packaging/model/model.onnx
+!packaging/model/metadata.json
